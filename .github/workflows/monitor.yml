@@ -1,0 +1,80 @@
+name: Stock Monitor
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 每 10 分钟一次（GitHub 可能延迟几分钟）
+  workflow_dispatch:
+    inputs:
+      test_email:
+        description: "只发测试邮件（不检测商品）"
+        type: boolean
+        default: false
+      test_bark:
+        description: "只发测试 Bark 警报（不检测商品）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run monitor
+        env:
+          PRODUCT_URL: ${{ secrets.PRODUCT_URL }}
+          IN_STOCK_TEXT: ${{ secrets.IN_STOCK_TEXT }}
+          OUT_OF_STOCK_TEXT: ${{ secrets.OUT_OF_STOCK_TEXT }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_SERVER: ${{ secrets.BARK_SERVER }}
+          LOCALE: ${{ secrets.LOCALE }}
+          TIMEZONE: ${{ secrets.TIMEZONE }}
+          TEST_EMAIL: ${{ inputs.test_email }}
+          TEST_BARK: ${{ inputs.test_bark }}
+        run: |
+          if [ "$TEST_EMAIL" = "true" ] || [ "$TEST_BARK" = "true" ]; then
+            [ "$TEST_EMAIL" = "true" ] && python monitor.py --test-email
+            [ "$TEST_BARK" = "true" ] && python monitor.py --test-bark
+            exit 0
+          else
+            python monitor.py
+          fi
+
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: ignore
+
+      - name: Save state
+        if: always()
+        run: |
+          if [ -f state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git diff --cached --quiet || (git commit -m "update state" && git push)
+          fi
